@@ -1,0 +1,558 @@
+---
+title: "data science interview"
+author: "duncan_kyalo"
+date: "2025-11-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# question1
+install.packages(c("tidyverse", "janitor", "readr", "readxl"))
+install.packages("janitor")
+# 1. Load necessary libraries
+library(tidyverse)
+library(janitor)
+library(readr)
+library(readxl)
+library(tidyverse)
+
+
+
+# 2. Load the datasets
+household_data <- read.csv("E:/interview/L4H_sample_data/sample_data/L4H_household_baseline_sample.csv", stringsAsFactors = FALSE)
+individual_data <- read.csv("E:/interview/L4H_sample_data/sample_data/L4H_individual_baseline_sample.csv", stringsAsFactors = FALSE)
+mother_data <- read.csv("E:/interview/L4H_sample_data/sample_data/L4H_mother_baseline_sample.csv", stringsAsFactors = FALSE)
+
+# 3. Clean column names using janitor
+household_clean <- clean_names(household_data)
+individual_clean <- clean_names(individual_data)
+mother_clean <- clean_names(mother_data)
+
+# 4. Filter household data for eligible households
+household_filtered <- household_clean %>% filter(hh_eligible == 1)
+
+# 5. Merge datasets
+# A. Merge individuals with mothers
+ind_mom_merged <- individual_clean %>%
+  left_join(mother_clean, by = c("number" = "number_0"))
+
+# B. Merge with eligible households
+final_dataset <- ind_mom_merged %>%
+  inner_join(household_filtered, by = "household_id")
+
+# 6. Inspect merged dataset
+glimpse(final_dataset)
+# View(final_dataset) # Uncomment if using RStudio
+
+# 7. Load data dictionary
+dict <- read_excel("E:/interview/L4H_sample_data/sample_data/data dictionary_L4H_sample.xlsx")
+
+# 8. Define recode helper safely
+recode_var <- function(data, varname, dict_var) {
+  codes <- dict$code[dict$variable == dict_var]
+  labels <- dict$label[dict$variable == dict_var]
+  
+  # Only recode if codes exist
+  if(length(codes) > 0 && length(labels) > 0) {
+    data[[varname]] <- factor(data[[varname]], levels = codes, labels = labels)
+  } else {
+    warning(paste("No matching codes found for", varname, "using", dict_var))
+  }
+  return(data)
+}
+
+# 9. Recode variables using dictionary reference
+household_clean <- recode_var(household_clean, "reason_for_eligibility", "Reason_for_eligibility")
+individual_clean <- recode_var(individual_clean, "rspntgndr", "Rspntgndr")
+household_clean <- recode_var(household_clean, "h_hfrml_eductn", "H_hfrml_eductn")
+individual_clean <- recode_var(individual_clean, "rspndtmarital", "Rspndtmarital")
+individual_clean <- recode_var(individual_clean, "rspndt_eductn", "Rspndt_eductn")
+household_clean <- recode_var(household_clean, "maincme", "Maincme")
+
+# 10. View updated datasets
+glimpse(household_clean)
+glimpse(individual_clean)
+
+# question2
+
+library(tidyverse)
+library(lubridate)
+
+# 1. Load the provided dataset
+ideal3a <- read_csv("E:/interview/L4H_sample_data/ideal3a.csv")
+
+# 2. Wrangle the data to create 'herd_dynamics' (Long Format)
+# Since the file only contains Cattle, we will hardcode Species = "Cattle"
+
+# Extract Births
+births <- ideal3a %>%
+  select(Date = CADOB) %>%
+  mutate(
+    Date = dmy(Date), # Convert string to Date
+    Event = "Birth",
+    Species = "Cattle"
+  )
+
+# Extract Deaths (based on ReasonsLoss1 column)
+deaths <- ideal3a %>%
+  filter(ReasonsLoss1 == "died") %>%
+  select(Date = VisitDate1) %>% # Using VisitDate1 as it is already YYYY-MM-DD in your sample
+  mutate(
+    Date = ymd(Date), 
+    Event = "Death",
+    Species = "Cattle"
+  )
+
+# Combine into one dataset
+herd_dynamics <- bind_rows(births, deaths) %>%
+  filter(!is.na(Date)) %>%
+  mutate(monthyear = floor_date(Date, "month")) %>%
+  group_by(monthyear, Event, Species) %>%
+  summarise(Count = n(), .groups = "drop")
+
+# 3. Create the Graphic
+ggplot(herd_dynamics, aes(x = monthyear, y = Count, fill = Species)) +
+  geom_col() +
+  facet_grid(Event ~ .) + # Facet by Event (Birth vs Death)
+  labs(
+    title = "Herd Dynamics Over Time",
+    subtitle = "Frequency of Animal Births and Deaths",
+    x = "Date (Month/Year)",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "3 months") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# question3
+library(tidyverse)
+library(sf)
+
+# 1. Load the Pregnancy Data
+preg_data <- read.csv("E:/interview/L4H_sample_data/table6_teenpregnancybycounty.csv")
+
+# 2. Load the Shapefile
+# Ensure the .shp, .shx, and .dbf files are in the "shapefiles" folder
+# Adjust the path below to where you saved your files
+kenya_shps <- st_read("E:/interview/L4H_sample_data/shapefiles/County.shp") 
+
+# 3. Clean and Standardize County Names for Joining
+# Shapefiles and CSVs often have slight spelling differences (e.g., "Murang'a" vs "Muranga")
+
+# Clean the CSV names
+preg_data_clean <- preg_data %>%
+  mutate(County = str_to_title(County)) %>%
+  mutate(County = case_when(
+    County == "Taita/Taveta" ~ "Taita Taveta",
+    County == "Tharaka-Nithi" ~ "Tharaka", # Shapefiles often use just 'Tharaka'
+    County == "Elgeyo/Marakwet" ~ "Keiyo-Marakwet", # Common shapefile variation
+    County == "Nairobi City" ~ "Nairobi",
+    TRUE ~ County
+  ))
+
+# Clean the Shapefile names (assuming column is named 'COUNTY' or 'Name')
+# You may need to check names(kenya_shps) to confirm the column name
+kenya_shps_clean <- kenya_shps %>%
+  mutate(Name = str_to_title(Name)) %>% # Assuming column is 'Name', change to 'COUNTY' if needed
+  mutate(Name = case_when(
+    Name == "Keiyo Marakwet" ~ "Keiyo-Marakwet",
+    Name == "Tharaka Nithi" ~ "Tharaka",
+    TRUE ~ Name
+  ))
+
+# 4. Join Data
+map_data <- left_join(kenya_shps_clean, preg_data_clean, by = c("Name" = "County"))
+
+# 5. Draw the Map
+ggplot(data = map_data) +
+  geom_sf(aes(fill = Ever_pregnant), color = "white", size = 0.2) +
+  scale_fill_viridis_c(option = "magma", direction = -1, name = "Ever Pregnant (%)") +
+  labs(
+    title = "Teenage Pregnancy in Kenya by County",
+    subtitle = "Percentage of teenagers who have ever been pregnant (2022)",
+    caption = "Source: Kenya Demographic Health Survey"
+  ) +
+  theme_void() + # Removes axes and grey background for a clean map look
+  theme(legend.position = "right")
+
+# question4
+
+# install.packages(caret)
+# Load necessary libraries
+library(tidyverse)
+# library(caret) # For easy confusion matrix if needed, or just formatting
+
+# 1. Load Data
+df <- read.csv("E:/interview/L4H_sample_data/ideal3a.csv")
+
+# 2. Data Wrangling (Create a Calf-Level Dataset)
+# We use distinct() to keep only one row per calf since ADWG, Sex, RecruitWeight,
+# and final outcome (Death) are calf-level attributes.
+calf_data <- df %>%
+  arrange(VisitDate) %>% # Ensure we keep relevant metadata
+  distinct(CalfID, .keep_all = TRUE) %>%
+  mutate(
+    # Recode Sex: 1=Male, 2=Female
+    CalfSex = factor(CalfSex, levels = c(1, 2), labels = c("Male", "Female")),
+    
+    # Recode Outcome: Create binary variable (1 = Died, 0 = Survived)
+    Death_Binary = ifelse(ReasonsLoss1 == "died", 1, 0),
+    
+    # Ensure categorical variables are factors
+    Distance_water = as.factor(Distance_water),
+    Education = as.factor(Education)
+  )
+
+# Check the structure
+str(calf_data)
+
+# --- LOGISTIC REGRESSION MODEL ---
+# Outcome: Death_Binary
+# Predictors: RecruitWeight, CalfSex, Distance_water
+# (Note: With a small sample size of ~30, we must limit the number of predictors 
+# to avoid overfitting. Education is excluded here to save degrees of freedom).
+
+logit_model <- glm(Death_Binary ~ RecruitWeight + CalfSex + Distance_water, 
+                   data = calf_data, 
+                   family = binomial(link = "logit"))
+
+# View Results
+summary(logit_model)
+
+# Calculate Odds Ratios (OR) for easier interpretation
+exp(cbind(OR = coef(logit_model), confint(logit_model)))
+# --- LINEAR REGRESSION MODEL ---
+# Outcome: ADWG (Average Daily Weight Gain)
+# Predictors: RecruitWeight, CalfSex, Distance_water, Education
+
+lm_model <- lm(ADWG ~ RecruitWeight + CalfSex + Distance_water + Education, 
+               data = calf_data)
+
+# View Results
+summary(lm_model)
+
+# app
+# install.packages(c("shiny", "bslib", "tidyverse", "sf", "leaflet", "plotly", "DT", "lubridate", "broom", "jtools"))
+
+library(shiny)
+library(bslib)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(plotly)
+library(DT)
+library(lubridate)
+library(broom)
+
+# ==============================================================================
+# 1. GLOBAL DATA LOADING & PREPROCESSING
+# ==============================================================================
+
+# --- Load Calf Data ---
+# We wrap this in tryCatch to prevent app crash if files are missing
+ideal3a <- tryCatch({
+  read.csv("ideal3a.csv", show_col_types = FALSE)
+}, error = function(e) {
+  stop("Could not find 'ideal3a.csv'. Please ensure it is in the app directory.")
+})
+
+# --- Preprocess for Herd Dynamics (Long Format) ---
+# Extract Births
+births <- ideal3a %>%
+  distinct(CalfID, .keep_all = TRUE) %>%
+  select(Date = CADOB) %>%
+  mutate(Date = dmy(Date), Event = "Birth", Species = "Cattle")
+
+# Extract Deaths
+deaths <- ideal3a %>%
+  filter(ReasonsLoss1 == "died") %>%
+  distinct(CalfID, .keep_all = TRUE) %>% # Ensure we don't count death multiple times for one calf
+  select(Date = VisitDate1) %>%
+  mutate(Date = ymd(Date), Event = "Death", Species = "Cattle")
+
+herd_dynamics <- bind_rows(births, deaths) %>%
+  filter(!is.na(Date)) %>%
+  mutate(monthyear = floor_date(Date, "month"))
+
+# --- Preprocess for Regression (Wide/Calf Format) ---
+calf_model_data <- ideal3a %>%
+  arrange(VisitDate) %>%
+  distinct(CalfID, .keep_all = TRUE) %>%
+  mutate(
+    CalfSex = factor(CalfSex, levels = c(1, 2), labels = c("Male", "Female")),
+    Death_Binary = ifelse(ReasonsLoss1 == "died", 1, 0),
+    Distance_water = as.factor(Distance_water),
+    Education = as.factor(Education),
+    # Ensure numeric types
+    RecruitWeight = as.numeric(RecruitWeight),
+    ADWG = as.numeric(ADWG)
+  ) %>%
+  filter(!is.na(RecruitWeight), !is.na(ADWG)) # Clean NAs for regression
+
+# --- Load Pregnancy Data & Shapefiles ---
+preg_data <- tryCatch({
+  read.csv("table6_teenpregnancybycounty.csv", show_col_types = FALSE)
+}, error = function(e) { NULL })
+
+# Attempt to load shapefiles
+shape_data <- tryCatch({
+  st_read("shapefiles/County.shp", quiet = TRUE)
+}, error = function(e) { NULL })
+
+# Join Map Data if both files exist
+map_ready <- FALSE
+if (!is.null(preg_data) && !is.null(shape_data)) {
+  
+  # Clean names for joining
+  preg_data_clean <- preg_data %>%
+    mutate(County = str_to_title(County)) %>%
+    mutate(County = case_when(
+      County == "Taita/Taveta" ~ "Taita Taveta",
+      County == "Tharaka-Nithi" ~ "Tharaka",
+      County == "Elgeyo/Marakwet" ~ "Keiyo-Marakwet",
+      County == "Nairobi City" ~ "Nairobi",
+      TRUE ~ County
+    ))
+  
+  # Assume shapefile column is 'Name' or 'COUNTY' - Adjust dynamically
+  shp_col <- names(shape_data)[grepl("NAME|COUNTY", names(shape_data), ignore.case = T)][1]
+  
+  shape_data_clean <- shape_data %>%
+    rename(CountyName = all_of(shp_col)) %>%
+    mutate(CountyName = str_to_title(CountyName)) %>%
+    mutate(CountyName = case_when(
+      CountyName == "Keiyo Marakwet" ~ "Keiyo-Marakwet",
+      CountyName == "Tharaka Nithi" ~ "Tharaka",
+      TRUE ~ CountyName
+    )) %>%
+    st_transform(crs = 4326) # Transform to WGS84 for Leaflet
+  
+  # Join
+  final_map_data <- left_join(shape_data_clean, preg_data_clean, by = c("CountyName" = "County"))
+  map_ready <- TRUE
+}
+
+# ==============================================================================
+# 2. USER INTERFACE
+# ==============================================================================
+
+ui <- page_navbar(
+  title = "IDEAL Study & Health Dashboard",
+  theme = bs_theme(version = 5, bootswatch = "minty"), # Attractive "Minty" theme
+  
+  # --- TAB 1: HERD DYNAMICS ---
+  nav_panel(
+    "Herd Dynamics",
+    layout_sidebar(
+      sidebar = sidebar(
+        h4("Filters"),
+        dateRangeInput("date_range", "Select Date Range:",
+                       start = min(herd_dynamics$Date),
+                       end = max(herd_dynamics$Date)),
+        checkboxGroupInput("event_type", "Select Events:",
+                           choices = c("Birth", "Death"),
+                           selected = c("Birth", "Death")),
+        hr(),
+        p(class = "text-muted", "This chart shows the monthly frequency of calf births and deaths.")
+      ),
+      card(
+        card_header("Monthly Herd Dynamics"),
+        plotlyOutput("herd_plot", height = "500px")
+      )
+    )
+  ),
+  
+  # --- TAB 2: TEENAGE PREGNANCY MAP ---
+  nav_panel(
+    "Pregnancy Map",
+    layout_sidebar(
+      sidebar = sidebar(
+        h4("Map Settings"),
+        selectInput("map_var", "Select Metric to Map:",
+                    choices = c("Ever Pregnant (%)" = "Ever_pregnant",
+                                "Currently Pregnant (%)" = "Currently_pregnant",
+                                "Pregnancy Loss (%)" = "Pregnancy_loss",
+                                "Live Birth (%)" = "Live_birth"),
+                    selected = "Ever_pregnant"),
+        hr(),
+        p(class = "text-muted", "Hover over counties to see detailed statistics."),
+        if(!map_ready) p(style="color:red", "Error: Shapefiles or CSV not found.")
+      ),
+      card(
+        card_header("Geospatial Analysis of Teenage Pregnancy"),
+        leafletOutput("kenya_map", height = "600px")
+      )
+    )
+  ),
+  
+  # --- TAB 3: STATISTICAL MODELS ---
+  nav_panel(
+    "Statistical Analysis",
+    layout_sidebar(
+      sidebar = sidebar(
+        h4("Model Configuration"),
+        
+        # Linear Regression Controls
+        conditionalPanel(
+          condition = "input.model_tabs == 'Growth Rate (Linear)'",
+          checkboxGroupInput("lm_predictors", "Predictors for ADWG:",
+                             choices = c("RecruitWeight", "CalfSex", "Distance_water", "Education"),
+                             selected = c("RecruitWeight", "CalfSex", "Distance_water"))
+        ),
+        
+        # Logistic Regression Controls
+        conditionalPanel(
+          condition = "input.model_tabs == 'Mortality Risk (Logistic)'",
+          checkboxGroupInput("glm_predictors", "Predictors for Death:",
+                             choices = c("RecruitWeight", "CalfSex", "Distance_water", "Education"),
+                             selected = c("RecruitWeight", "CalfSex"))
+        ),
+        actionButton("run_model", "Run Model", class = "btn-primary")
+      ),
+      
+      tabsetPanel(
+        id = "model_tabs",
+        
+        # Sub-tab: Logistic
+        tabPanel("Mortality Risk (Logistic)",
+                 card(
+                   card_header("Logistic Regression Results (Outcome: Death)"),
+                   verbatimTextOutput("glm_summary"),
+                   h5("Odds Ratios"),
+                   tableOutput("glm_odds")
+                 )
+        ),
+        
+        # Sub-tab: Linear
+        tabPanel("Growth Rate (Linear)",
+                 card(
+                   card_header("Linear Regression Results (Outcome: ADWG)"),
+                   verbatimTextOutput("lm_summary"),
+                   h5("Model Diagnostics"),
+                   plotOutput("lm_diagnostics", height = "600px")
+                 )
+        ),
+        
+        # Sub-tab: Data View
+        tabPanel("Raw Data",
+                 card(DTOutput("raw_data_table"))
+        )
+      )
+    )
+  )
+)
+
+# ==============================================================================
+# 3. SERVER LOGIC
+# ==============================================================================
+
+server <- function(input, output, session) {
+  
+  # --- 1. Herd Dynamics Plot ---
+  output$herd_plot <- renderPlotly({
+    req(input$date_range)
+    
+    filtered_data <- herd_dynamics %>%
+      filter(Date >= input$date_range[1], 
+             Date <= input$date_range[2],
+             Event %in% input$event_type) %>%
+      group_by(monthyear, Event) %>%
+      summarise(Count = sum(Count), .groups = "drop")
+    
+    p <- ggplot(filtered_data, aes(x = monthyear, y = Count, fill = Event)) +
+      geom_col(position = "dodge") +
+      scale_fill_manual(values = c("Birth" = "#2ecc71", "Death" = "#e74c3c")) +
+      labs(x = "Date", y = "Count", title = "Calf Births vs Deaths") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggplotly(p) %>% layout(legend = list(orientation = "h", x = 0.4, y = -0.2))
+  })
+  
+  # --- 2. Leaflet Map ---
+  output$kenya_map <- renderLeaflet({
+    req(map_ready)
+    
+    # Create the map object
+    l <- leaflet(final_map_data) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      setView(lng = 37.9062, lat = 0.0236, zoom = 6)
+    
+    l
+  })
+  
+  observe({
+    req(map_ready)
+    # Observer to update polygons based on selection without redrawing base map
+    col_selected <- input$map_var
+    
+    # Create Palette
+    pal <- colorNumeric(palette = "YlOrRd", domain = final_map_data[[col_selected]])
+    
+    leafletProxy("kenya_map", data = final_map_data) %>%
+      clearShapes() %>%
+      clearControls() %>%
+      addPolygons(
+        fillColor = ~pal(get(col_selected)),
+        weight = 1,
+        opacity = 1,
+        color = "white",
+        dashArray = "3",
+        fillOpacity = 0.7,
+        highlightOptions = highlightOptions(
+          weight = 3,
+          color = "#666",
+          dashArray = "",
+          fillOpacity = 0.7,
+          bringToFront = TRUE),
+        label = ~paste0(CountyName, ": ", get(col_selected), "%"),
+        popup = ~paste0("<strong>", CountyName, "</strong><br>",
+                        col_selected, ": ", get(col_selected), "%")
+      ) %>%
+      addLegend("bottomright", pal = pal, values = ~get(col_selected),
+                title = "Percentage",
+                opacity = 1)
+  })
+  
+  # --- 3. Statistical Models ---
+  
+  # Reactive Linear Model
+  lm_fit <- eventReactive(input$run_model, {
+    req(input$lm_predictors)
+    f <- as.formula(paste("ADWG ~", paste(input$lm_predictors, collapse = " + ")))
+    lm(f, data = calf_model_data)
+  }, ignoreNULL = FALSE) # Run once on startup
+  
+  # Reactive Logistic Model
+  glm_fit <- eventReactive(input$run_model, {
+    req(input$glm_predictors)
+    f <- as.formula(paste("Death_Binary ~", paste(input$glm_predictors, collapse = " + ")))
+    glm(f, data = calf_model_data, family = binomial)
+  }, ignoreNULL = FALSE)
+  
+  # Outputs
+  output$lm_summary <- renderPrint({ summary(lm_fit()) })
+  
+  output$lm_diagnostics <- renderPlot({
+    par(mfrow = c(2, 2))
+    plot(lm_fit())
+    par(mfrow = c(1, 1))
+  })
+  
+  output$glm_summary <- renderPrint({ summary(glm_fit()) })
+  
+  output$glm_odds <- renderTable({
+    model <- glm_fit()
+    exp(cbind(OR = coef(model), confint(model)))
+  }, rownames = TRUE)
+  
+  output$raw_data_table <- renderDT({
+    datatable(calf_model_data, options = list(scrollX = TRUE))
+  })
+}
+
+# Run the App
+shinyApp(ui, server)
+
+```
+
