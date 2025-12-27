@@ -1,0 +1,148 @@
+---
+title: "analysis"
+author: "duncan"
+date: "2025-12-27"
+output: html_document
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(plotly)
+library(DT)
+library(lubridate)
+library(broom)
+
+# DATA LOADING
+ideal3a <- read.csv("E:/interview/L4H_sample_data/ideal3a.csv")
+
+preg_data <- tryCatch(
+read.csv("E:/interview/L4H_sample_data/table6_teenpregnancybycounty.csv"),
+error = function(e) NULL
+)
+
+shape_data <- tryCatch(
+st_read("E:/interview/L4H_sample_data/shapefiles/County.shp", quiet = TRUE),
+error = function(e) NULL
+)
+
+# Herd dynamics preparation
+births <- ideal3a %>%
+distinct(CalfID, .keep_all = TRUE) %>%
+mutate(
+Date = dmy(CADOB),
+Event = "Birth",
+Count = 1
+) %>%
+select(Date, Event, Count)
+
+deaths <- ideal3a %>%
+filter(ReasonsLoss1 == "died") %>%
+distinct(CalfID, .keep_all = TRUE) %>%
+mutate(
+Date = ymd(VisitDate1),
+Event = "Death",
+Count = 1
+) %>%
+select(Date, Event, Count)
+
+herd_dynamics <- bind_rows(births, deaths) %>%
+filter(!is.na(Date)) %>%
+mutate(monthyear = floor_date(Date, "month"))
+
+# Herd dynamics summary
+herd_summary <- herd_dynamics %>%
+group_by(monthyear, Event) %>%
+summarise(Count = sum(Count), .groups = "drop")
+
+ggplot(herd_summary, aes(monthyear, Count, fill = Event)) +
+geom_col(position = "dodge") +
+labs(
+title = "Monthly Calf Births and Deaths",
+x = "Month",
+y = "Count"
+) +
+theme_minimal()
+
+# Regression data preparation
+calf_model_data <- ideal3a %>%
+distinct(CalfID, .keep_all = TRUE) %>%
+mutate(
+CalfSex = factor(CalfSex, levels = c(1, 2), labels = c("Male", "Female")),
+Death_Binary = ifelse(ReasonsLoss1 == "died", 1, 0),
+Distance_water = as.factor(Distance_water),
+Education = as.factor(Education),
+RecruitWeight = as.numeric(RecruitWeight),
+ADWG = as.numeric(ADWG)
+) %>%
+filter(!is.na(RecruitWeight), !is.na(ADWG))
+
+# Linear regression
+lm_fit <- lm(
+ADWG ~ RecruitWeight + CalfSex + Distance_water,
+data = calf_model_data
+)
+
+summary(lm_fit)
+
+par(mfrow = c(2, 2))
+plot(lm_fit)
+par(mfrow = c(1, 1))
+
+#Logistic regression
+glm_fit <- glm(
+Death_Binary ~ RecruitWeight + CalfSex,
+data = calf_model_data,
+family = binomial
+)
+
+summary(glm_fit)
+
+exp(cbind(
+OR = coef(glm_fit),
+confint(glm_fit)
+))
+
+# Raw data preview
+datatable(
+calf_model_data,
+options = list(scrollX = TRUE, pageLength = 10)
+)
+
+# Pregnancy map
+if (!is.null(preg_data) && !is.null(shape_data)) {
+
+preg_data_clean <- preg_data %>%
+mutate(County = str_to_title(County)) %>%
+mutate(
+County = case_when(
+County == "Taita/Taveta" ~ "Taita Taveta",
+County == "Tharaka-Nithi" ~ "Tharaka",
+County == "Elgeyo/Marakwet" ~ "Keiyo-Marakwet",
+County == "Nairobi City" ~ "Nairobi",
+TRUE ~ County
+)
+)
+
+shp_col <- names(shape_data)[grepl("NAME|COUNTY", names(shape_data), ignore.case = TRUE)][1]
+
+shape_data_clean <- shape_data %>%
+rename(CountyName = all_of(shp_col)) %>%
+mutate(CountyName = str_to_title(CountyName)) %>%
+st_transform(crs = 4326)
+
+final_map_data <- left_join(
+shape_data_clean,
+preg_data_clean,
+by = c("CountyName" = "County")
+)
+}
+
+if (exists("final_map_data")) {
+leaflet(final_map_data) %>%
+addProviderTiles(providers$CartoDB.Positron) %>%
+setView(lng = 37.9, lat = 0.0, zoom = 6)
+}
+
+
